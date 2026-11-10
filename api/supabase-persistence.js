@@ -53,7 +53,12 @@ async function bodyText(response) {
 async function ensureBucket(cfg) {
   const probe = await fetch(bucketUrl(cfg), { headers: headersFor(cfg.key) });
   if (probe.ok) return;
-  if (probe.status !== 404) throw new Error(`Supabase Storage bucket check failed (${probe.status})`);
+  const probeBody = await bodyText(probe);
+  // Supabase's hosted Storage API currently answers a missing bucket with HTTP
+  // 400 plus a NoSuchBucket payload, while local emulators commonly use 404.
+  // Treat both forms as the create-on-first-boot case.
+  const missing = probe.status === 404 || (probe.status === 400 && /NoSuchBucket|Bucket not found/i.test(probeBody));
+  if (!missing) throw new Error(`Supabase Storage bucket check failed (${probe.status}) ${probeBody}`);
   const created = await fetch(`${cfg.url}/storage/v1/bucket`, {
     method: 'POST',
     headers: { ...headersFor(cfg.key), 'content-type': 'application/json' },

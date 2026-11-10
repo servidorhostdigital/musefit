@@ -17,7 +17,9 @@ test('Supabase persistence hydrates, uploads and removes DATA_DIR files', async 
       res.writeHead(status, { 'content-type': 'application/json' });
       res.end(typeof body === 'string' ? body : JSON.stringify(body));
     };
-    if (req.method === 'GET' && url.pathname === '/storage/v1/bucket/musefit-data') return send(404, {});
+    if (req.method === 'GET' && url.pathname === '/storage/v1/bucket/musefit-data') {
+      return send(400, { statusCode: '404', error: 'Bucket not found', message: 'Bucket not found', code: 'NoSuchBucket' });
+    }
     if (req.method === 'POST' && url.pathname === '/storage/v1/bucket') return send(200, {});
     if (req.method === 'POST' && url.pathname === '/storage/v1/object/list/musefit-data') {
       const rows = [...remote.keys()].map(name => ({ name, id: 'object', metadata: { size: remote.get(name).length } }));
