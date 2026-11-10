@@ -54,8 +54,7 @@ function AuthInput({ label, type = 'text', value, onChange, placeholder, autoCom
 function BrandMark({ compact = false }) {
   return (
     <div className={'mf-brand' + (compact ? ' compact' : '')}>
-      <span className="mf-brand-icon"><Icon name="dumbbell" /></span>
-      <span className="mf-brand-name">Muse<span>Fit</span></span>
+      <img className="mf-brand-logo" src="/musefit-logo.png" alt="MuseFit" />
     </div>
   )
 }

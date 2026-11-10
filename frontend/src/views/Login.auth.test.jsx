@@ -79,6 +79,7 @@ describe('MuseFit authentication', () => {
   it('shows e-mail/password and Google without passkeys', () => {
     const page = mount()
     expect(page.textContent).toContain('MuseFit')
+    expect(page.querySelector('img.mf-brand-logo[alt="MuseFit"]')).toBeTruthy()
     expect(page.textContent).toContain('Entrar com Google')
     expect(page.querySelector('input[autocomplete="email"]')).toBeTruthy()
     expect(page.querySelector('input[autocomplete="current-password"]')).toBeTruthy()
