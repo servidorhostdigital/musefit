@@ -1,134 +1,255 @@
+import { useState } from 'react'
 import { useStore } from '../store/useStore.js'
 import { useUI } from '../store/useUI.js'
-import { webauthnOK, passkeyLogin, passkeyRegister, passkeyError, bio } from '../lib/api.js'
-import { hasData } from '../store/useStore.js'
-import { t } from '../lib/i18n.js'
 import { DEMO, REPO } from '../lib/demo.js'
 import { guestAllowed } from '../lib/guest.js'
-import { useState, useRef, useEffect } from 'react'
-import Icon from '../components/Icon.jsx'
-import { Button, Segmented } from '../components/ui.jsx'
 import { askAddDeviceData } from '../sheets.jsx'
-import { passwordOn, PasswordRegisterForm, openPasswordSignIn } from '../components/PasswordAuth.jsx'
-import { openDeviceLinkRedeem } from '../components/Passkeys.jsx'
-import { openLostAccess } from '../components/LostAccess.jsx'
+import Icon from '../components/Icon.jsx'
+import {
+  exchangeSupabaseSession,
+  signOutSupabase,
+  supabase,
+  supabaseConfigured,
+} from '../lib/supabase.js'
+import './Login.css'
 
-function RegisterSheet({ close }) {
-  const { setUser, pushState, pullState, loadConfig } = useStore()
-  const config = useStore(s => s.config)
-  const [name, setName] = useState('')
-  const [code, setCode] = useState('')
-  const inviteOnly = !!config?.invite_only
-  // A password is offered only where the instance allows it (#118), and is the only choice in a
-  // browser that cannot make a passkey. Where both work, the passkey stays the first one.
-  const pwOn = passwordOn(config)
-  const [how, setHow] = useState(webauthnOK() ? 'passkey' : 'password')
-  const ref = useRef(null)
-  useEffect(() => { setTimeout(() => ref.current?.focus(), 250) }, [])
-  // Boot already fetched this; retry here only if that attempt failed, so the invite field still
-  // appears on an instance whose config arrived late rather than never.
-  useEffect(() => { loadConfig() }, [loadConfig])
-  const go = async () => {
-    const n = name.trim()
-    if (!n) { useUI.getState().toast(t('Enter a name')); return }
-    if (inviteOnly && !code.trim()) { useUI.getState().toast(t('An invite code is required')); return }
-    try {
-      const u = await passkeyRegister(n, code.trim())
-      setUser(u); close()
-      if (hasData(useStore.getState().S)) { await pushState(); useUI.getState().toast(t('Profile created, and this device’s data moved into it')) }
-      else { await pullState(); useUI.getState().toast(t('Welcome, {0}', u.name)) }
-    } catch (e) { if (e.name !== 'NotAllowedError' && e.name !== 'AbortError') useUI.getState().toast(passkeyError(e, t('Registration failed'))) }
-  }
-  const choose = pwOn && webauthnOK() && <>
-    <Segmented options={[{ value: 'passkey', label: t('Passkey'), icon: 'fingerprint' }, { value: 'password', label: t('Password'), icon: 'key' }]}
-      value={how} onChange={setHow} />
-    <div style={{ height: 12 }} />
-  </>
-  if (pwOn && how === 'password') return <>
-    <h3>{t('Create your profile')}</h3>
-    {choose}
-    <div className="muted small" style={{ marginBottom: 14 }}>{t('Pick a name and a password. You sign in with both.')}</div>
-    <PasswordRegisterForm close={close} inviteOnly={inviteOnly} name={name} setName={setName} code={code} setCode={setCode} />
-  </>
-  return <>
-    <h3>{t('Create your profile')}</h3>
-    {choose}
-    <div className="muted small" style={{ marginBottom: 14 }}>{t('Pick a name, then confirm with {0}. The passkey lives on your device, so no password needed.', bio())}</div>
-    <input ref={ref} className="input" placeholder={t('Your name')} maxLength={40} value={name} onChange={e => setName(e.target.value)} />
-    {inviteOnly && <>
-      <div style={{ height: 10 }} />
-      <input className="input" placeholder={t('Invite code')} maxLength={40} value={code}
-        onChange={e => setCode(e.target.value.toUpperCase())} style={{ letterSpacing: '.14em', fontWeight: 600, textAlign: 'center' }} />
-      <div className="dim small" style={{ marginTop: 6 }}>{t('This app is invite-only. Enter the code you were given.')}</div>
-    </>}
-    <div style={{ height: 12 }} />
-    <Button variant="primary" onClick={go}>{t('Create passkey')}</Button>
-  </>
+function GoogleMark() {
+  return (
+    <svg className="mf-google-mark" viewBox="0 0 24 24" aria-hidden="true">
+      <path fill="#4285F4" d="M21.35 12.23c0-.7-.06-1.38-.18-2.03H12v3.84h5.24a4.48 4.48 0 0 1-1.94 2.94v2.45h3.14c1.84-1.7 2.91-4.2 2.91-7.2Z" />
+      <path fill="#34A853" d="M12 21.6c2.63 0 4.84-.87 6.45-2.37l-3.14-2.45c-.87.58-1.98.92-3.31.92-2.54 0-4.69-1.72-5.46-4.03H3.3v2.53A9.74 9.74 0 0 0 12 21.6Z" />
+      <path fill="#FBBC05" d="M6.54 13.67a5.85 5.85 0 0 1 0-3.34V7.8H3.3a9.72 9.72 0 0 0 0 8.4l3.24-2.53Z" />
+      <path fill="#EA4335" d="M12 6.3c1.43 0 2.71.49 3.72 1.45l2.79-2.79C16.84 3.4 14.63 2.4 12 2.4A9.74 9.74 0 0 0 3.3 7.8l3.24 2.53C7.31 8.02 9.46 6.3 12 6.3Z" />
+    </svg>
+  )
+}
+function authMessage(error) {
+  const msg = String(error?.message || '').toLowerCase()
+  if (msg.includes('invalid login credentials')) return 'E-mail ou senha incorretos.'
+  if (msg.includes('email not confirmed')) return 'Confirme seu e-mail antes de entrar.'
+  if (msg.includes('user already registered')) return 'Este e-mail já está cadastrado.'
+  if (msg.includes('password should be at least')) return 'Use uma senha mais forte, com pelo menos 8 caracteres.'
+  if (msg.includes('provider is not enabled') || msg.includes('unsupported provider')) return 'O login com Google ainda não foi ativado no Supabase.'
+  if (error?.status === 401) return 'Não foi possível validar sua sessão. Tente novamente.'
+  return error?.message || 'Não foi possível concluir. Tente novamente.'
+}
+
+function AuthInput({ label, type = 'text', value, onChange, placeholder, autoComplete, required = true }) {
+  return (
+    <label className="mf-auth-field">
+      <span>{label}</span>
+      <input
+        className="mf-auth-input"
+        type={type}
+        value={value}
+        onChange={onChange}
+        placeholder={placeholder}
+        autoComplete={autoComplete}
+        required={required}
+        minLength={type === 'password' ? 8 : undefined}
+      />
+    </label>
+  )
+}
+function BrandMark({ compact = false }) {
+  return (
+    <div className={'mf-brand' + (compact ? ' compact' : '')}>
+      <span className="mf-brand-icon"><Icon name="dumbbell" /></span>
+      <span className="mf-brand-name">Muse<span>Fit</span></span>
+    </div>
+  )
+}
+
+function Feature({ icon, title, text }) {
+  return (
+    <div className="mf-auth-feature">
+      <span className="mf-feature-icon"><Icon name={icon} /></span>
+      <span><strong>{title}</strong><small>{text}</small></span>
+    </div>
+  )
 }
 
 export default function Login() {
   const { setUser, adoptProfile, setGuest } = useStore()
   const config = useStore(s => s.config)
   const canGuest = guestAllowed(config)
-  const pwOn = passwordOn(config)
-  const register = () => useUI.getState().openSheet(close => <RegisterSheet close={close} />)
-  const signIn = async () => {
-    try { const u = await passkeyLogin(); setUser(u, { adopt: true }); await adoptProfile(askAddDeviceData); useUI.getState().toast(t('Welcome back, {0}', u.name)) }
-    catch (e) { if (e.name !== 'NotAllowedError' && e.name !== 'AbortError') useUI.getState().toast(passkeyError(e, t('Sign-in failed'))) }
-  }
-  const head = <>
-    <div style={{ fontSize: 54, display: 'flex', justifyContent: 'center', color: 'var(--acc-ink)' }}><Icon name="dumbbell" /></div>
-    <h1 className="t-large" style={{ fontWeight: 700, margin: '10px 0 4px' }}>openGym</h1>
-  </>
-  const wrap = { display: 'flex', flexDirection: 'column', justifyContent: 'center', minHeight: '78vh', textAlign: 'center' }
+  const recovery = new URLSearchParams(window.location.search).get('reset') === '1'
+  const [mode, setMode] = useState(recovery ? 'recover' : 'signin')
+  const [name, setName] = useState('')
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [repeat, setRepeat] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
 
-  // Demo build: no backend to sign in against — the only way in is the local guest profile.
+  const resetMessages = () => { setError(''); setNotice('') }
+  const goTo = next => { resetMessages(); setMode(next) }
+
+  const completeSession = async session => {
+    const user = await exchangeSupabaseSession(session)
+    setUser(user, { adopt: true })
+    await adoptProfile(askAddDeviceData)
+    useUI.getState().toast(`Bem-vindo de volta, ${user.name}`)
+  }
+
+  const submit = async event => {
+    event.preventDefault()
+    if (busy) return
+    resetMessages()
+    if (!supabaseConfigured || !supabase) {
+      setError('O login ainda não foi configurado no ambiente de produção.')
+      return
+    }
+    if (mode === 'signup' && password !== repeat) {
+      setError('As senhas não coincidem.')
+      return
+    }
+    setBusy(true)
+    try {
+      if (mode === 'signin') {
+        const { data, error: signInError } = await supabase.auth.signInWithPassword({ email: email.trim(), password })
+        if (signInError) throw signInError
+        if (!data.session) throw new Error('Não foi possível criar a sessão.')
+        await completeSession(data.session)
+      } else if (mode === 'signup') {
+        const { data, error: signUpError } = await supabase.auth.signUp({
+          email: email.trim(),
+          password,
+          options: {
+            data: { full_name: name.trim(), name: name.trim() },
+            emailRedirectTo: window.location.origin,
+          },
+        })
+        if (signUpError) throw signUpError
+        if (!data.session) {
+          setNotice('Cadastro criado. Confira seu e-mail para confirmar a conta e depois entre no MuseFit.')
+          setMode('signin')
+        } else await completeSession(data.session)
+      } else if (mode === 'forgot') {
+        const { error: resetError } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+          redirectTo: `${window.location.origin}/?reset=1`,
+        })
+        if (resetError) throw resetError
+        setNotice('Enviamos um link de recuperação para o seu e-mail.')
+      } else {
+        if (password.length < 8) throw new Error('Use uma senha com pelo menos 8 caracteres.')
+        if (password !== repeat) throw new Error('As senhas não coincidem.')
+        const { error: updateError } = await supabase.auth.updateUser({ password })
+        if (updateError) throw updateError
+        const { data } = await supabase.auth.getSession()
+        if (!data.session) throw new Error('O link de recuperação expirou. Solicite outro.')
+        window.history.replaceState({}, '', window.location.pathname)
+        await completeSession(data.session)
+      }
+    } catch (e) {
+      setError(authMessage(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const google = async () => {
+    if (busy) return
+    resetMessages()
+    if (!supabaseConfigured || !supabase) {
+      setError('O login com Google ainda não foi configurado no ambiente de produção.')
+      return
+    }
+    setBusy(true)
+    try {
+      const { error: googleError } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: { redirectTo: window.location.origin },
+      })
+      if (googleError) throw googleError
+    } catch (e) {
+      setBusy(false)
+      setError(authMessage(e))
+    }
+  }
+
+  const signOutGoogle = async () => {
+    try { await signOutSupabase() } catch { /* no active Supabase session */ }
+  }
+
   if (DEMO) return (
-    <div className="narrow" style={wrap}>
-      {head}
-      <div className="muted" style={{ marginBottom: 30 }}>{t('Live demo. Everything stays in this browser.')}</div>
-      <Button variant="primary" icon="play" onClick={() => setGuest(true)}>{t('Start the demo')}</Button>
-      <div className="card small muted" style={{ textAlign: 'start', marginTop: 16 }}>
-        {t('This demo runs entirely in your browser on example data. Nothing is sent anywhere. Passkey sign-in and sync across your devices come with the openGym server, which you get by self-hosting it.')}
-      </div>
-      <div className="dim small" style={{ marginTop: 22, lineHeight: 1.6 }}>
-        <a href={REPO} target="_blank" rel="noopener">{t('Self-host it in a minute →')}</a>
+    <div className="mf-auth-screen mf-demo-auth">
+      <div className="mf-auth-card mf-demo-card">
+        <BrandMark compact />
+        <h1>Seu treino, no seu ritmo.</h1>
+        <p>Esta é a demonstração do MuseFit. Tudo fica salvo neste navegador.</p>
+        <button className="mf-auth-btn primary" type="button" onClick={() => setGuest(true)}>Começar demonstração</button>
+        <a href={REPO} target="_blank" rel="noopener" className="mf-auth-link">Conheça o projeto →</a>
       </div>
     </div>
   )
 
+  const title = mode === 'signup' ? 'Crie sua conta' : mode === 'forgot' ? 'Recupere seu acesso' : mode === 'recover' ? 'Defina uma nova senha' : 'Bem-vindo de volta'
+  const subtitle = mode === 'signup' ? 'Comece a acompanhar sua evolução de um jeito mais inteligente.' : mode === 'forgot' ? 'Informe seu e-mail e enviaremos um link seguro para você voltar.' : mode === 'recover' ? 'Escolha uma senha nova para continuar treinando.' : 'Seu treino organizado. Sua evolução visível.'
+
   return (
-    <div className="narrow" style={wrap}>
-      {head}
-      <div className="muted" style={{ marginBottom: 34 }}>{t('Your workouts. Your weights. Your profile.')}</div>
-      {webauthnOK() ? <>
-        <Button variant="primary" icon="fingerprint" onClick={signIn}>{t('Sign in with passkey')}</Button>
-        <div style={{ height: 10 }} />
-        {pwOn && <><Button icon="key" onClick={() => openPasswordSignIn()}>{t('Sign in with password')}</Button><div style={{ height: 10 }} /></>}
-        <Button icon="plusCircle" onClick={register}>{t('Create new profile')}</Button>
-        {/* Already signed in on another device: a code from there gives this one a passkey of
-            its own (#95), instead of a new, empty profile. */}
-        <div style={{ height: 10 }} />
-        <Button variant="ghost" className="dim" icon="qr" onClick={openDeviceLinkRedeem}>{t('Use a code from your other device')}</Button>
-        {/* No device signs you in any more (#584): what to try, and where a recovery code goes. */}
-        <Button variant="ghost" className="dim" onClick={openLostAccess}>{t('Lost access?')}</Button>
-        {canGuest && <div style={{ height: 4 }} />}
-      </> : pwOn ? <>
-        {/* Plain http on a LAN address, or a browser without passkey support: the password is
-            the way in, and the only way to create a profile from here. */}
-        <div className="card small muted" style={{ textAlign: 'start', marginBottom: 14 }}>{t("This browser doesn't support passkeys. Sign in with your name and password instead.")}</div>
-        <Button variant="primary" icon="key" onClick={() => openPasswordSignIn()}>{t('Sign in with password')}</Button>
-        <div style={{ height: 10 }} />
-        <Button icon="plusCircle" onClick={register}>{t('Create new profile')}</Button>
-        <Button variant="ghost" className="dim" onClick={openLostAccess}>{t('Lost access?')}</Button>
-        {canGuest && <div style={{ height: 10 }} />}
-      </> : <div className="card small muted" style={{ textAlign: 'start' }}>{canGuest
-        ? t("This browser doesn't do passkeys, but you can still use openGym locally on this device.")
-        // Without passkeys and without the guest entrance there is no way in from this browser,
-        // so say that plainly instead of offering a local profile that cannot be created.
-        : t("This browser doesn't support passkeys, and this instance requires an account. Try a browser or device with passkey support.")}</div>}
-      {canGuest && <Button variant="ghost" className="dim" onClick={() => setGuest(true)}>{t('Continue without account')}</Button>}
-      <div className="dim small" style={{ marginTop: 26, lineHeight: 1.5 }}>{pwOn ? t('Passkeys use {0}. A password works too, where passkeys do not.', bio()) : t('Passkeys use {0}. No passwords to remember.', bio())}<br />{t('Each profile keeps its own plan, workouts & body weight.')}</div>
+    <div className="mf-auth-screen">
+      <div className="mf-auth-shell">
+        <aside className="mf-auth-story">
+          <BrandMark />
+          <div className="mf-story-copy">
+            <p className="mf-eyebrow">TREINE COM PROPÓSITO</p>
+            <h1>Consistência transforma esforço em <em>resultado.</em></h1>
+            <p className="mf-story-text">Planeje seus treinos, acompanhe cargas e enxergue sua evolução em um só lugar.</p>
+          </div>
+          <div className="mf-auth-features">
+            <Feature icon="chartLine" title="Evolução clara" text="Veja o que está funcionando." />
+            <Feature icon="target" title="Treino com foco" text="Organize sua rotina sem distração." />
+            <Feature icon="shield" title="Seus dados protegidos" text="Acesso seguro em qualquer dispositivo." />
+          </div>
+          <div className="mf-story-orbit" aria-hidden="true"><span /><span /><span /></div>
+        </aside>
+
+        <main className="mf-auth-panel">
+          <div className="mf-auth-card">
+            <div className="mf-mobile-brand"><BrandMark compact /></div>
+            <div className="mf-auth-heading">
+              <p className="mf-auth-kicker">MUSEFIT</p>
+              <h2>{title}</h2>
+              <p>{subtitle}</p>
+            </div>
+
+            {mode !== 'forgot' && mode !== 'recover' && (
+              <button className="mf-auth-btn google" type="button" onClick={google} disabled={busy}>
+                <GoogleMark />
+                {mode === 'signup' ? 'Cadastrar com Google' : 'Entrar com Google'}
+              </button>
+            )}
+
+            {mode !== 'forgot' && mode !== 'recover' && <div className="mf-auth-divider"><span>ou continue com e-mail</span></div>}
+
+            <form className="mf-auth-form" onSubmit={submit} noValidate>
+              {mode === 'signup' && <AuthInput label="Seu nome" value={name} onChange={e => setName(e.target.value)} placeholder="Como devemos chamar você?" autoComplete="name" />}
+              {mode !== 'recover' && <AuthInput label="E-mail" type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="voce@exemplo.com" autoComplete="email" />}
+              {mode !== 'forgot' && <AuthInput label={mode === 'recover' ? 'Nova senha' : 'Senha'} type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="Mínimo de 8 caracteres" autoComplete={mode === 'recover' || mode === 'signup' ? 'new-password' : 'current-password'} />}
+              {(mode === 'signup' || mode === 'recover') && <AuthInput label="Confirme sua senha" type="password" value={repeat} onChange={e => setRepeat(e.target.value)} placeholder="Digite novamente sua senha" autoComplete="new-password" />}
+              {error && <div className="mf-auth-feedback error" role="alert"><Icon name="warning" />{error}</div>}
+              {notice && <div className="mf-auth-feedback success" role="status"><Icon name="checkCircle" />{notice}</div>}
+              {mode === 'forgot' ? (
+                <button className="mf-auth-btn primary" type="submit" disabled={busy}>{busy ? 'Enviando link…' : 'Enviar link de recuperação'}</button>
+              ) : (
+                <button className="mf-auth-btn primary" type="submit" disabled={busy}>{busy ? 'Aguarde…' : mode === 'signup' ? 'Criar minha conta' : mode === 'recover' ? 'Salvar nova senha' : 'Entrar'}</button>
+              )}
+            </form>
+
+            <div className="mf-auth-actions">
+              {mode === 'signin' && <button type="button" className="mf-auth-text-btn" onClick={() => goTo('forgot')}>Esqueci minha senha</button>}
+              {mode === 'forgot' && <button type="button" className="mf-auth-text-btn" onClick={() => goTo('signin')}>Voltar para o login</button>}
+              {mode === 'recover' && <button type="button" className="mf-auth-text-btn" onClick={() => { signOutGoogle(); window.history.replaceState({}, '', window.location.pathname); goTo('signin') }}>Cancelar</button>}
+              {(mode === 'signin' || mode === 'signup') && <p>{mode === 'signin' ? 'Ainda não tem uma conta?' : 'Já tem uma conta?'} <button type="button" className="mf-auth-inline-btn" onClick={() => goTo(mode === 'signin' ? 'signup' : 'signin')}>{mode === 'signin' ? 'Criar conta' : 'Entrar'}</button></p>}
+            </div>
+
+            {canGuest && mode === 'signin' && <button type="button" className="mf-auth-guest" onClick={() => setGuest(true)}>Explorar sem conta</button>}
+            <p className="mf-auth-legal">Ao continuar, você concorda com os termos de uso do MuseFit.</p>
+          </div>
+        </main>
+      </div>
     </div>
   )
 }

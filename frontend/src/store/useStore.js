@@ -31,6 +31,7 @@ import { DEFAULT_TEMPLATE_ID } from '../lib/structuralBalanceTemplates.js'
 import { WC_DEFAULT } from '../lib/workout-controls.js'
 import { sanitizeAccent } from '../lib/accent.js'
 import { registerExerciseAliases } from '../lib/exercise-aliases.js'
+import { exchangeStoredSupabaseSession, signOutSupabase } from '../lib/supabase.js'
 
 const KEY = 'gym_state_v1'
 // Where the saved copy stands with the server: the revision it descends from, and its own `_ts`
@@ -1925,6 +1926,7 @@ export const useStore = create((set, get) => {
       // The device is signed out either way. A request that did not get through leaves the cookie
       // behind, still valid, so the logout is owed until the server answers it (see boot).
       try { await api('/api/logout', { method: 'POST', body: '{}' }) } catch (e) { if (!MOBILE) logoutOwed(true) }
+      try { await signOutSupabase() } catch { /* the custom MuseFit session is still cleared below */ }
       await clearLocalSession()
       return left.owed ? owedResult(left, { stashed: true }) : { owed: false }
     },
@@ -1997,6 +1999,7 @@ export const useStore = create((set, get) => {
       const uid = get().user?.id
       await api('/api/account/delete', { method: 'POST', body: JSON.stringify({ name, ...proof }) })
       await stopTimers()
+      try { await signOutSupabase() } catch { /* there may be no Supabase session */ }
       const all = await readStashes()
       const key = stashKey(serverBase(), uid)
       if (all[key]) { delete all[key]; await writeStashes(all) }
@@ -2125,7 +2128,19 @@ export const useStore = create((set, get) => {
         if (logoutOwed()) { finishBoot(); return }
       }
       try {
-        const me = await api('/api/me')
+        let me
+        try {
+          me = await api('/api/me')
+        } catch (first) {
+          // OAuth returns to the app with a Supabase session but without the MuseFit cookie. The
+          // exchange makes the existing API/session model available before the normal boot pull.
+          const recoveryFlow = new URLSearchParams(window.location.search).get('reset') === '1'
+          if (first?.status !== 401 || recoveryFlow) throw first
+          try {
+            if (!await exchangeStoredSupabaseSession()) throw first
+            me = await api('/api/me')
+          } catch { throw first }
+        }
         if (!me.user?.id) throw Object.assign(new Error('no user'), { status: 200, code: 'bad-response' })
         get().setUser(me.user)
         // Re-stamp the reminder's timezone on every load — keeps it correct if you're travelling,

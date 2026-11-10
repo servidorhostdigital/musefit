@@ -40,6 +40,7 @@ const LABELS = {
   'auth.password.change': 'Changed their password',
   'auth.password.remove': 'Removed their password',
   'auth.password.reset': 'Used a reset code',
+  'auth.supabase.ok': 'Signed in with e-mail or Google',
   // The e-mail a profile may sign in with instead of its name. `msg` is the proof it was set with
   // and the address masked to two characters ("password · a…@e…") — never the address itself.
   'auth.email.set': 'Added a sign-in e-mail',

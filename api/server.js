@@ -49,7 +49,9 @@ const PORT = +(process.env.PORT || 3000);
 const DATA = process.env.DATA_DIR || '/data';
 const RP_ID = process.env.RP_ID || 'localhost';
 const ORIGIN = process.env.ORIGIN || 'http://localhost:8080';
-const RP_NAME = process.env.RP_NAME || 'openGym';
+const RP_NAME = process.env.RP_NAME || 'MuseFit';
+const SUPABASE_AUTH_URL = String(process.env.SUPABASE_URL || '').replace(/\/+$/, '');
+const SUPABASE_AUTH_KEY = process.env.SUPABASE_ANON_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 // Admin dashboard (issue): admins are matched by uid (or the admin flag FIRST_USER_ADMIN sets);
 // INVITE_ONLY gates new signups behind a code the admin generates. Off by default, so a fresh
 // self-hosted instance stays open.
@@ -704,7 +706,7 @@ const PASSKEY_ROUTES = new Set([
 // device code in the body is the credential, never a Bearer.
 const SIGN_IN_ROUTES = new Set([
   'POST /api/login/password', 'POST /api/register/password', 'POST /api/login/password-reset',
-  'POST /api/device-link/options', 'POST /api/device-link/verify'
+  'POST /api/device-link/options', 'POST /api/device-link/verify', 'POST /api/auth/supabase'
 ]);
 // A verify error as the answer's body: a passkey made at an address that is not ORIGIN/RP_ID gets
 // the same `code` as the origin check's 403, so the app explains both alike.
@@ -1048,6 +1050,7 @@ setInterval(() => { AUTH_BURST.sweep(); ADDR_FAILS.sweep(); ACCOUNT_FAILS.sweep(
 const THROTTLED = {
   'POST /api/login/password': 'password', 'POST /api/login/password-reset': 'password',
   'POST /api/register/password': 'signup',
+  'POST /api/auth/supabase': null,
   'POST /api/account/password': 'password', 'DELETE /api/account/password': null,
   // Setting an e-mail only spends the budget and asks the address's e-mail pause; an address
   // already in use counts against it (see POST /api/account/email).
@@ -2082,6 +2085,72 @@ function dataWritable() {
   return ok;
 }
 
+/* ---------- Supabase Auth exchange ---------- */
+// Supabase owns the e-mail/password and Google ceremonies. The API verifies the resulting access
+// token with Supabase once, links it to the existing MuseFit profile model, then issues the same
+// signed HttpOnly cookie used by passkeys and the legacy password routes. Workout sync and every
+// existing permission check therefore keep one account/session implementation.
+function supabaseDisplayName(authUser) {
+  const meta = authUser?.user_metadata || {};
+  const raw = [meta.full_name, meta.name, meta.user_name, authUser?.email?.split('@')[0]]
+    .find(v => typeof v === 'string' && v.trim());
+  const name = String(raw || 'MuseFit').normalize('NFKC').trim().replace(/\s+/g, ' ').slice(0, 40);
+  return name || 'MuseFit';
+}
+
+async function supabaseAuthUser(accessToken) {
+  if (!SUPABASE_AUTH_URL || !SUPABASE_AUTH_KEY) return { error: 'supabase-auth-not-configured' };
+  try {
+    const answer = await fetch(`${SUPABASE_AUTH_URL}/auth/v1/user`, {
+      headers: { apikey: SUPABASE_AUTH_KEY, Authorization: `Bearer ${accessToken}` },
+    });
+    if (!answer.ok) return { error: 'supabase-session-invalid' };
+    const user = await answer.json();
+    return user?.id ? { user } : { error: 'supabase-session-invalid' };
+  } catch (e) {
+    console.error('supabase auth verification failed:', e.message);
+    return { error: 'supabase-auth-unavailable' };
+  }
+}
+
+const supabaseAuthRoutes = {
+  'POST /api/auth/supabase': async (req, res) => {
+    const body = await readBody(req);
+    const token = typeof body.access_token === 'string' ? body.access_token.trim() : '';
+    if (!token || token.length > 8192) return json(res, 400, { error: 'supabase access token required', code: 'missing-token' });
+    const answer = await supabaseAuthUser(token);
+    if (answer.error === 'supabase-auth-not-configured') return json(res, 503, { error: 'Supabase Auth is not configured', code: answer.error });
+    if (answer.error) return json(res, 401, { error: 'Supabase session is invalid or expired', code: answer.error });
+
+    const authUser = answer.user;
+    const email = normalizeEmail(authUser.email || '');
+    if (!email) return json(res, 400, { error: 'Supabase account has no valid e-mail', code: 'email-required' });
+    let user = db.users.find(u => u.supabaseId === authUser.id);
+    // If an older MuseFit account already used the same address, link it instead of creating a
+    // second profile and making the person's existing workouts appear to have disappeared.
+    if (!user) user = db.users.find(u => !u.supabaseId && u.email === email) || null;
+    let changed = false;
+    if (!user) {
+      user = {
+        id: crypto.randomBytes(12).toString('base64url'),
+        name: supabaseDisplayName(authUser),
+        email,
+        supabaseId: authUser.id,
+        created: new Date().toISOString(),
+      };
+      claimFirstAdmin(req, user);
+      db.users.push(user);
+      changed = true;
+    } else {
+      if (user.supabaseId !== authUser.id) { user.supabaseId = authUser.id; changed = true; }
+      if (!user.email) { user.email = email; changed = true; }
+    }
+    if (changed) saveDb();
+    audit(req, 'auth.supabase.ok', { user });
+    json(res, 200, { user: publicUser(user) }, { 'Set-Cookie': sessionCookie(user) });
+  },
+};
+
 const routes = {
   // 503 rather than a flag in a 200: the container healthcheck is `wget --spider`, which reads
   // the status and nothing else, and an instance that cannot write its data directory is exactly
@@ -2090,6 +2159,8 @@ const routes = {
     if (!dataWritable()) return json(res, 503, { ok: false, writable: false });
     json(res, 200, { ok: true, users: db.users.length, writable: true });
   },
+
+  ...supabaseAuthRoutes,
 
   // Public config the login screen needs before anyone is signed in. `coach` is absent unless
   // the instance has both switched the Coach on and successfully connected a provider — the
