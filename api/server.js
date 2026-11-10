@@ -43,6 +43,7 @@ import { createIntegrations } from './integrations/index.js';
 import { integrationRoutes } from './integrations/routes.js';
 import { excusedOn, nudgeFor, nudgeWindowOpen, toneOf } from './nudge.js';
 import { wrappedPushYear, wrappedSummary, wrappedPushOwed, wrappedPush } from './wrapped.js';
+import { prepareSupabasePersistence } from './supabase-persistence.js';
 
 const PORT = +(process.env.PORT || 3000);
 const DATA = process.env.DATA_DIR || '/data';
@@ -102,6 +103,12 @@ const SESSION_DAYS = Math.max(1, +(process.env.SESSION_DAYS || 90) || 90);
 const MAX_BODY = 5 * 1024 * 1024;
 // Secure cookies require HTTPS; over plain http://localhost the flag would drop the cookie
 const SECURE = /^https:/i.test(ORIGIN) ? ' Secure;' : '';
+
+// Vercel service containers have an ephemeral filesystem. When Supabase
+// credentials are present, hydrate the existing file-based API before loading
+// auth/state and mirror subsequent writes back to the private storage bucket.
+// Local/self-hosted installs keep the original DATA_DIR behavior unchanged.
+await prepareSupabasePersistence(DATA);
 
 fs.mkdirSync(DATA, { recursive: true });
 /* The secrets are locked down file by file rather than by sealing the whole directory.
