@@ -40,3 +40,6 @@ body:has(.mf-auth-screen) #app{max-width:none;padding:0}
 @media (max-width:880px){.mf-auth-shell{grid-template-columns:minmax(0,1fr) minmax(360px,430px);gap:44px;padding-inline:clamp(22px,5vw,44px)}.mf-story-copy h1{font-size:clamp(2.8rem,6vw,4.5rem)}.mf-story-orbit{right:-30%;width:430px}}
 @media (max-width:720px){.mf-auth-shell{display:block;padding:0}.mf-auth-story{display:none}.mf-auth-panel{min-height:100dvh;align-items:center;padding:20px 16px}.mf-auth-card{max-width:480px;padding:28px 22px 23px;border-radius:23px;background:rgba(14,24,18,.88)}.mf-mobile-brand{display:block}.mf-auth-heading{margin-bottom:23px}.mf-auth-heading .mf-auth-kicker{display:none}}
 @media (prefers-reduced-motion:reduce){.mf-auth-btn,.mf-auth-input{transition:none}}
+
+/* Keep the focused field to a single border, without the extra focus ring. */
+.mf-auth-input:focus{background:transparent;outline:0;box-shadow:none}
