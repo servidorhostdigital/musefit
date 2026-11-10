@@ -6,6 +6,10 @@ The repository is configured as a Vercel Services project:
 - `api/` is the Node container service and receives `/api/*` requests.
 - `vercel.json` routes both services through the same MuseFit domain.
 
+In the Vercel project settings, keep **Root Directory** empty (the repository
+root). If the project was imported with `frontend` as its root, Vercel will
+publish only the static app and `/api/*` will not reach the API service.
+
 The API keeps its existing file-oriented data model so the self-hosted Docker
 deployment remains compatible. In a Vercel container the local filesystem is
 ephemeral, so `api/supabase-persistence.js` hydrates `DATA_DIR` from a private
